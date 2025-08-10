@@ -1,0 +1,794 @@
+{
+  "name": "WhatsApp → Google Drive Assistant",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp",
+        "responseMode": "onReceived",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "Webhook",
+      "name": "Webhook (Twilio WhatsApp)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [260, 280],
+      "notes": "Point your Twilio WhatsApp Sandbox inbound webhook here (x-www-form-urlencoded: From, Body)."
+    },
+    {
+      "parameters": {
+        "functionCode": "const body = $json.Body || $json.body || $json.query?.Body || '';\nconst from = $json.From || $json.from || $json.query?.From || '';\nreturn [{ body: (body || '').trim(), from }];"
+      },
+      "id": "Normalize",
+      "name": "Normalize payload",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [520, 280]
+    },
+    {
+      "parameters": {
+        "functionCode": "function normalizePath(p){ if(!p) return '/'; if(!p.startsWith('/')) p='/'+p; if(p.length>1 && p.endsWith('/')) p=p.slice(0,-1); return p; }\nconst raw = (items[0].json.body || '').trim().replace(/\\s+/g, ' ');\nconst upper = raw.toUpperCase();\nlet out = { raw, from: items[0].json.from, command: 'UNKNOWN', args: [], confirm: false };\nif (!raw) return [out];\nif (upper === 'HELP' || upper === '/HELP') { out.command = 'HELP'; return [out]; }\nconst [verb, ...rest] = raw.split(' ');\nswitch(verb.toUpperCase()){\n  case 'LIST': {\n    out.command = 'LIST';\n    out.args = [normalizePath(rest[0] || '/')];\n    break;\n  }\n  case 'DELETE': {\n    out.command = 'DELETE';\n    out.confirm = rest.some(r => r.toUpperCase() === 'CONFIRM');\n    const target = rest.filter(r => r.toUpperCase() !== 'CONFIRM')[0] || '';\n    out.args = [normalizePath(target)];\n    break;\n  }\n  case 'MOVE': {\n    out.command = 'MOVE';\n    const src = normalizePath(rest[0] || '');\n    const dst = normalizePath(rest[1] || '');\n    out.args = [src, dst];\n    break;\n  }\n  case 'SUMMARY': {\n    out.command = 'SUMMARY';\n    out.args = [normalizePath(rest[0] || '/')];\n    break;\n  }\n  default: {\n    out.command = 'UNKNOWN';\n  }\n}\nreturn [out];"
+      },
+      "id": "Parse",
+      "name": "Parse command",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [760, 280]
+    },
+    {
+      "parameters": {
+        "propertyName": "command",
+        "dataType": "string",
+        "rules": {
+          "rules": [
+            { "operation": "equal", "value": "HELP" },
+            { "operation": "equal", "value": "LIST" },
+            { "operation": "equal", "value": "DELETE" },
+            { "operation": "equal", "value": "MOVE" },
+            { "operation": "equal", "value": "SUMMARY" }
+          ]
+        }
+      },
+      "id": "Route",
+      "name": "Route by command",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 2,
+      "position": [1000, 280],
+      "notes": "HELP, LIST, DELETE, MOVE, SUMMARY"
+    },
+
+    /* HELP */
+    {
+      "parameters": {
+        "from": "={{$env.TWILIO_WHATSAPP_FROM}}",
+        "to": "={{$json.from}}",
+        "message": "HELP\\n\\nCommands:\\n- LIST /ProjectX\\n- DELETE /ProjectX/report.pdf\\n- DELETE /ProjectX/*.pdf CONFIRM\\n- MOVE /ProjectX/report.pdf /Archive\\n- SUMMARY /ProjectX"
+      },
+      "id": "HelpReply",
+      "name": "Reply: HELP",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 2,
+      "position": [1260, 120],
+      "credentials": {
+        "twilioApi": "Twilio Account (WhatsApp)"
+      }
+    },
+
+    /* LIST */
+    {
+      "parameters": {
+        "operation": "list",
+        "filters": {
+          "q": "={{\"name = '\" + $json.args[0].slice(1) + \"' and mimeType = 'application/vnd.google-apps.folder' and 'root' in parents and trashed=false\"}}"
+        }
+      },
+      "id": "List_FindFolder",
+      "name": "Drive: Find Folder",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [1260, 220],
+      "credentials": {
+        "googleDriveOAuth2Api": "Google Drive (OAuth2)"
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const folder = items[0]?.json; return [{ folderId: folder?.id || '', folderName: folder?.name || '', from: $json.from }];"
+      },
+      "id": "List_PickFolder",
+      "name": "Pick folder",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1460, 220]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [{ "value1": "={{$json.folderId}}", "operation": "isEmpty" }]
+        }
+      },
+      "id": "List_IfNoFolder",
+      "name": "IF: Folder not found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1660, 220]
+    },
+    {
+      "parameters": {
+        "from": "={{$env.TWILIO_WHATSAPP_FROM}}",
+        "to": "={{$json.from}}",
+        "message": "Folder not found. Try: LIST /YourFolder"
+      },
+      "id": "List_ReplyNotFound",
+      "name": "Reply: folder not found",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 2,
+      "position": [1860, 160],
+      "credentials": {
+        "twilioApi": "Twilio Account (WhatsApp)"
+      }
+    },
+    {
+      "parameters": {
+        "operation": "list",
+        "filters": {
+          "q": "={{\"'\" + $json.folderId + \"' in parents and trashed=false\"}}"
+        }
+      },
+      "id": "List_ListFiles",
+      "name": "Drive: List files",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [1860, 280],
+      "credentials": {
+        "googleDriveOAuth2Api": "Google Drive (OAuth2)"
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "if (items.length === 0) return [{ text: 'No files found.' }];\nconst lines = items.map(i => `• ${i.json.name} (${i.json.mimeType})`);\nreturn [{ text: 'Files:\\n' + lines.join('\\n') }];"
+      },
+      "id": "List_Format",
+      "name": "Format list",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [2060, 280]
+    },
+    {
+      "parameters": {
+        "from": "={{$env.TWILIO_WHATSAPP_FROM}}",
+        "to": "={{$json.from}}",
+        "message": "={{$json.text}}"
+      },
+      "id": "List_Reply",
+      "name": "Reply: LIST",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 2,
+      "position": [2260, 280],
+      "credentials": {
+        "twilioApi": "Twilio Account (WhatsApp)"
+      }
+    },
+
+    /* DELETE */
+    {
+      "parameters": {
+        "functionCode": "const target = $json.args[0] || '';\nconst isWildcard = target.includes('*');\nconst base = target.split('/').pop();\nreturn [{ from: $json.from, target, base, isWildcard, confirm: $json.confirm }];"
+      },
+      "id": "Del_Parse",
+      "name": "DELETE: parse",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1260, 360]
+    },
+    {
+      "parameters": {
+        "operation": "list",
+        "filters": {
+          "q": "={{$json.isWildcard ? (\"name contains '\" + $json.base.replace('*','') + \"' and trashed=false\") : (\"name = '\" + $json.base + \"' and trashed=false\")}}"
+        }
+      },
+      "id": "Del_Find",
+      "name": "Drive: Find matches",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [1460, 360],
+      "credentials": {
+        "googleDriveOAuth2Api": "Google Drive (OAuth2)"
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const matches = items.map(i=>i.json);\nreturn [{ from: $json.from, target: $json.target, confirm: $json.confirm, count: matches.length, firstId: matches[0]?.id || '', firstName: matches[0]?.name || '' }];"
+      },
+      "id": "Del_Count",
+      "name": "DELETE: count matches",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1660, 360]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [{ "value1": "={{$json.count}}", "operation": "equal", "value2": 0 }]
+        }
+      },
+      "id": "Del_IfNone",
+      "name": "IF: no matches?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1860, 320]
+    },
+    {
+      "parameters": {
+        "from": "={{$env.TWILIO_WHATSAPP_FROM}}",
+        "to": "={{$json.from}}",
+        "message": "No matching file found."
+      },
+      "id": "Del_ReplyNone",
+      "name": "Reply: none",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 2,
+      "position": [2060, 300],
+      "credentials": {
+        "twilioApi": "Twilio Account (WhatsApp)"
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [{ "value1": "={{$json.count}}", "operation": "larger", "value2": 1 }]
+        }
+      },
+      "id": "Del_IfMany",
+      "name": "IF: multiple matches?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1860, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [{ "value1": "={{$json.confirm}}", "operation": "isTrue" }]
+        }
+      },
+      "id": "Del_IfConfirmed",
+      "name": "IF: confirmed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2060, 440]
+    },
+    {
+      "parameters": {
+        "from": "={{$env.TWILIO_WHATSAPP_FROM}}",
+        "to": "={{$json.from}}",
+        "message": "Multiple files match. Reply with: DELETE {{$json.target}} CONFIRM"
+      },
+      "id": "Del_ReplyNeedConfirm",
+      "name": "Reply: need CONFIRM",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 2,
+      "position": [2260, 420],
+      "credentials": {
+        "twilioApi": "Twilio Account (WhatsApp)"
+      }
+    },
+    {
+      "parameters": {
+        "operation": "delete",
+        "fileId": "={{$json.firstId}}"
+      },
+      "id": "Del_Delete",
+      "name": "Drive: Delete (first match)",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [2060, 340],
+      "credentials": {
+        "googleDriveOAuth2Api": "Google Drive (OAuth2)"
+      }
+    },
+    {
+      "parameters": {
+        "from": "={{$env.TWILIO_WHATSAPP_FROM}}",
+        "to": "={{$json.from}}",
+        "message": "={{'Deleted: ' + $json.firstName}}"
+      },
+      "id": "Del_ReplyDeleted",
+      "name": "Reply: deleted",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 2,
+      "position": [2260, 340],
+      "credentials": {
+        "twilioApi": "Twilio Account (WhatsApp)"
+      }
+    },
+
+    /* MOVE */
+    {
+      "parameters": {
+        "functionCode": "const [src, dst] = $json.args;\nconst srcName = (src||'').split('/').pop();\nconst dstName = (dst||'').slice(1);\nreturn [{ from: $json.from, src, dst, srcName, dstName }];"
+      },
+      "id": "Move_Parse",
+      "name": "MOVE: parse paths",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1260, 520]
+    },
+    {
+      "parameters": {
+        "operation": "list",
+        "filters": {
+          "q": "={{\"name = '\" + $json.srcName + \"' and trashed=false\"}}"
+        }
+      },
+      "id": "Move_FindFile",
+      "name": "Drive: Find file",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [1460, 500],
+      "credentials": {
+        "googleDriveOAuth2Api": "Google Drive (OAuth2)"
+      }
+    },
+    {
+      "parameters": {
+        "operation": "list",
+        "filters": {
+          "q": "={{\"name = '\" + $json.dstName + \"' and mimeType='application/vnd.google-apps.folder' and 'root' in parents and trashed=false\"}}"
+        }
+      },
+      "id": "Move_FindDest",
+      "name": "Drive: Find dest folder",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [1460, 560],
+      "credentials": {
+        "googleDriveOAuth2Api": "Google Drive (OAuth2)"
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const file = items[0]?.json; const folder = items[1]?.json;\nreturn [{ from: $json.from, fileId: file?.id || '', fileName: file?.name || '', destId: folder?.id || '', dst: $json.dst }];"
+      },
+      "id": "Move_PickIds",
+      "name": "MOVE: pick IDs",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1660, 530]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            { "value1": "={{$json.fileId}}", "operation": "isEmpty" },
+            { "value1": "={{$json.destId}}", "operation": "isEmpty" }
+          ]
+        }
+      },
+      "id": "Move_IfMissing",
+      "name": "IF: missing file or folder?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1860, 530]
+    },
+    {
+      "parameters": {
+        "from": "={{$env.TWILIO_WHATSAPP_FROM}}",
+        "to": "={{$json.from}}",
+        "message": "File or destination not found."
+      },
+      "id": "Move_ReplyMissing",
+      "name": "Reply: missing",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 2,
+      "position": [2060, 500],
+      "credentials": {
+        "twilioApi": "Twilio Account (WhatsApp)"
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "fileId": "={{$json.fileId}}",
+        "options": {
+          "addParents": "={{$json.destId}}"
+        }
+      },
+      "id": "Move_Update",
+      "name": "Drive: Move (add parent)",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [2060, 560],
+      "credentials": {
+        "googleDriveOAuth2Api": "Google Drive (OAuth2)"
+      }
+    },
+    {
+      "parameters": {
+        "from": "={{$env.TWILIO_WHATSAPP_FROM}}",
+        "to": "={{$json.from}}",
+        "message": "={{'Moved: ' + $json.fileName + ' -> ' + $json.dst}}"
+      },
+      "id": "Move_Reply",
+      "name": "Reply: MOVE",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 2,
+      "position": [2260, 560],
+      "credentials": {
+        "twilioApi": "Twilio Account (WhatsApp)"
+      }
+    },
+
+    /* SUMMARY */
+    {
+      "parameters": {
+        "operation": "list",
+        "filters": {
+          "q": "={{\"name = '\" + $json.args[0].slice(1) + \"' and mimeType = 'application/vnd.google-apps.folder' and 'root' in parents and trashed=false\"}}"
+        }
+      },
+      "id": "Sum_FindFolder",
+      "name": "Drive: Find folder (Summary)",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [1260, 680],
+      "credentials": {
+        "googleDriveOAuth2Api": "Google Drive (OAuth2)"
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const folder = items[0]?.json; return [{ from: $json.from, folderId: folder?.id || '', folderName: folder?.name || '' }];"
+      },
+      "id": "Sum_PickFolder",
+      "name": "SUMMARY: pick folder",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [1460, 680]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [{ "value1": "={{$json.folderId}}", "operation": "isEmpty" }]
+        }
+      },
+      "id": "Sum_IfNoFolder",
+      "name": "IF: folder not found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1660, 680]
+    },
+    {
+      "parameters": {
+        "from": "={{$env.TWILIO_WHATSAPP_FROM}}",
+        "to": "={{$json.from}}",
+        "message": "Folder not found for SUMMARY."
+      },
+      "id": "Sum_ReplyNoFolder",
+      "name": "Reply: no folder",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 2,
+      "position": [1860, 640],
+      "credentials": {
+        "twilioApi": "Twilio Account (WhatsApp)"
+      }
+    },
+    {
+      "parameters": {
+        "operation": "list",
+        "filters": {
+          "q": "={{\"'\" + $json.folderId + \"' in parents and trashed=false\"}}"
+        }
+      },
+      "id": "Sum_ListFiles",
+      "name": "Drive: list files (Summary)",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [1860, 720],
+      "credentials": {
+        "googleDriveOAuth2Api": "Google Drive (OAuth2)"
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "return items.map(i => ({ json: { from: $json.from, id: i.json.id, name: i.json.name, mimeType: i.json.mimeType, mode: (i.json.mimeType||'').includes('google-apps.document') ? 'gdoc' : ((i.json.mimeType||'').includes('text/plain') ? 'text' : 'other') } }));"
+      },
+      "id": "Sum_Prepare",
+      "name": "SUMMARY: prepare items",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [2060, 720]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [{ "value1": "={{$json.mode}}", "operation": "equal", "value2": "gdoc" }]
+        }
+      },
+      "id": "Sum_IfGDoc",
+      "name": "IF: is Google Doc?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2260, 660]
+    },
+    {
+      "parameters": {
+        "operation": "export",
+        "fileId": "={{$json.id}}",
+        "mimeType": "text/plain",
+        "options": {
+          "binaryPropertyName": "data"
+        }
+      },
+      "id": "Sum_ExportGDoc",
+      "name": "Drive: export GDoc -> text",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [2460, 640],
+      "credentials": {
+        "googleDriveOAuth2Api": "Google Drive (OAuth2)"
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const b = items[0]?.binary?.data; if (!b) return [{ name: $json.name, text: '' }]; const buff = Buffer.from(b.data, b.encoding || 'base64'); const txt = buff.toString('utf-8').replace(/\\u0000/g,'').trim().slice(0,20000); return [{ name: $json.name, text: txt }];"
+      },
+      "id": "Sum_GDocToText",
+      "name": "GDoc -> text",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [2660, 640]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [{ "value1": "={{$json.mode}}", "operation": "equal", "value2": "text" }]
+        }
+      },
+      "id": "Sum_IfText",
+      "name": "IF: is text file?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2260, 780]
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": "={{$json.id}}",
+        "options": {
+          "binaryPropertyName": "data"
+        }
+      },
+      "id": "Sum_DownloadText",
+      "name": "Drive: download text",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [2460, 760],
+      "credentials": {
+        "googleDriveOAuth2Api": "Google Drive (OAuth2)"
+      }
+    },
+    {
+      "parameters": {
+        "functionCode": "const b = items[0]?.binary?.data; if (!b) return [{ name: $json.name, text: '' }]; const buff = Buffer.from(b.data, b.encoding || 'base64'); const txt = buff.toString('utf-8').replace(/\\u0000/g,'').trim().slice(0,20000); return [{ name: $json.name, text: txt }];"
+      },
+      "id": "Sum_TextToText",
+      "name": "TXT -> text",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [2660, 760]
+    },
+    {
+      "parameters": {
+        "mode": "append"
+      },
+      "id": "Sum_MergeTexts",
+      "name": "Merge texts",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [2860, 700]
+    },
+    {
+      "parameters": {
+        "functionCode": "const docs = items.map(i => i.json).filter(j => (j.text||'').length > 0);\nif (docs.length === 0) {\n  return [{ prompt: 'No readable documents found for SUMMARY.' }];\n}\nlet prompt = 'Summarize each document into 3-5 concise bullet points.\\n\\n';\nfor (const d of docs) {\n  const snippet = d.text.slice(0, 5000);\n  prompt += `Document: ${d.name}\\n${snippet}\\n\\n`;\n}\nreturn [{ prompt }];"
+      },
+      "id": "Sum_BuildPrompt",
+      "name": "Build prompt",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "position": [3060, 700]
+    },
+    {
+      "parameters": {
+        "operation": "chat",
+        "model": "gpt-4o",
+        "messages": "={{[{role:'system', content:'You are a concise assistant. Summarize each document clearly with bullets, include key facts and dates.'},{role:'user', content: $json.prompt }]}}",
+        "options": {
+          "temperature": 0.2,
+          "maxTokens": 600
+        }
+      },
+      "id": "Sum_OpenAI",
+      "name": "OpenAI: summarize",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 3,
+      "position": [3260, 700],
+      "credentials": {
+        "openAiApi": "OpenAI (GPT-4o)"
+      }
+    },
+    {
+      "parameters": {
+        "from": "={{$env.TWILIO_WHATSAPP_FROM}}",
+        "to": "={{$json.from}}",
+        "message": "={{$json.data || $json.summary || $json.text || 'No summary available.'}}"
+      },
+      "id": "Sum_Reply",
+      "name": "Reply: SUMMARY",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 2,
+      "position": [3460, 700],
+      "credentials": {
+        "twilioApi": "Twilio Account (WhatsApp)"
+      }
+    }
+  ],
+  "connections": {
+    "Webhook (Twilio WhatsApp)": {
+      "main": [[{ "node": "Normalize", "type": "main", "index": 0 }]]
+    },
+    "Normalize": {
+      "main": [[{ "node": "Parse command", "type": "main", "index": 0 }]]
+    },
+    "Parse command": {
+      "main": [[{ "node": "Route by command", "type": "main", "index": 0 }]]
+    },
+    "Route by command": {
+      "main": [
+        [{ "node": "Reply: HELP", "type": "main", "index": 0 }],
+        [{ "node": "Drive: Find Folder", "type": "main", "index": 0 }],
+        [{ "node": "DELETE: parse", "type": "main", "index": 0 }],
+        [{ "node": "MOVE: parse paths", "type": "main", "index": 0 }],
+        [{ "node": "Drive: Find folder (Summary)", "type": "main", "index": 0 }]
+      ]
+    },
+
+    /* LIST branch connections */
+    "Drive: Find Folder": {
+      "main": [[{ "node": "Pick folder", "type": "main", "index": 0 }]]
+    },
+    "Pick folder": {
+      "main": [[{ "node": "IF: Folder not found?", "type": "main", "index": 0 }]]
+    },
+    "IF: Folder not found?": {
+      "main": [
+        [{ "node": "Reply: folder not found", "type": "main", "index": 0 }],
+        [{ "node": "Drive: List files", "type": "main", "index": 0 }]
+      ]
+    },
+    "Drive: List files": {
+      "main": [[{ "node": "Format list", "type": "main", "index": 0 }]]
+    },
+    "Format list": {
+      "main": [[{ "node": "Reply: LIST", "type": "main", "index": 0 }]]
+    },
+
+    /* DELETE connections */
+    "DELETE: parse": {
+      "main": [[{ "node": "Drive: Find matches", "type": "main", "index": 0 }]]
+    },
+    "Drive: Find matches": {
+      "main": [[{ "node": "DELETE: count matches", "type": "main", "index": 0 }]]
+    },
+    "DELETE: count matches": {
+      "main": [[{ "node": "IF: no matches?", "type": "main", "index": 0 }]]
+    },
+    "IF: no matches?": {
+      "main": [
+        [{ "node": "Reply: none", "type": "main", "index": 0 }],
+        [{ "node": "IF: multiple matches?", "type": "main", "index": 0 }]
+      ]
+    },
+    "IF: multiple matches?": {
+      "main": [
+        [{ "node": "IF: confirmed?", "type": "main", "index": 0 }],
+        [{ "node": "Drive: Delete (first match)", "type": "main", "index": 0 }]
+      ]
+    },
+    "IF: confirmed?": {
+      "main": [
+        [{ "node": "Drive: Delete (first match)", "type": "main", "index": 0 }],
+        [{ "node": "Reply: need CONFIRM", "type": "main", "index": 0 }]
+      ]
+    },
+    "Drive: Delete (first match)": {
+      "main": [[{ "node": "Reply: deleted", "type": "main", "index": 0 }]]
+    },
+
+    /* MOVE connections */
+    "MOVE: parse paths": {
+      "main": [
+        [
+          { "node": "Drive: Find file", "type": "main", "index": 0 },
+          { "node": "Drive: Find dest folder", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Drive: Find file": {
+      "main": [[{ "node": "MOVE: pick IDs", "type": "main", "index": 0 }]]
+    },
+    "Drive: Find dest folder": {
+      "main": [[{ "node": "MOVE: pick IDs", "type": "main", "index": 0 }]]
+    },
+    "MOVE: pick IDs": {
+      "main": [[{ "node": "IF: missing file or folder?", "type": "main", "index": 0 }]]
+    },
+    "IF: missing file or folder?": {
+      "main": [
+        [{ "node": "Reply: missing", "type": "main", "index": 0 }],
+        [{ "node": "Drive: Move (add parent)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Drive: Move (add parent)": {
+      "main": [[{ "node": "Reply: MOVE", "type": "main", "index": 0 }]]
+    },
+
+    /* SUMMARY connections */
+    "Drive: Find folder (Summary)": {
+      "main": [[{ "node": "SUMMARY: pick folder", "type": "main", "index": 0 }]]
+    },
+    "SUMMARY: pick folder": {
+      "main": [[{ "node": "IF: folder not found?", "type": "main", "index": 0 }]]
+    },
+    "IF: folder not found?": {
+      "main": [
+        [{ "node": "Reply: no folder", "type": "main", "index": 0 }],
+        [{ "node": "Drive: list files (Summary)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Drive: list files (Summary)": {
+      "main": [[{ "node": "SUMMARY: prepare items", "type": "main", "index": 0 }]]
+    },
+    "SUMMARY: prepare items": {
+      "main": [[{ "node": "IF: is Google Doc?", "type": "main", "index": 0 }]]
+    },
+    "IF: is Google Doc?": {
+      "main": [
+        [{ "node": "Drive: export GDoc -> text", "type": "main", "index": 0 }],
+        [{ "node": "IF: is text file?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Drive: export GDoc -> text": {
+      "main": [[{ "node": "GDoc -> text", "type": "main", "index": 0 }]]
+    },
+    "GDoc -> text": {
+      "main": [[{ "node": "Merge texts", "type": "main", "index": 0 }]]
+    },
+    "IF: is text file?": {
+      "main": [
+        [{ "node": "Drive: download text", "type": "main", "index": 0 }],
+        [{ "node": "Merge texts", "type": "main", "index": 0 }]
+      ]
+    },
+    "Drive: download text": {
+      "main": [[{ "node": "TXT -> text", "type": "main", "index": 0 }]]
+    },
+    "TXT -> text": {
+      "main": [[{ "node": "Merge texts", "type": "main", "index": 1 }]]
+    },
+    "Merge texts": {
+      "main": [[{ "node": "Build prompt", "type": "main", "index": 0 }]]
+    },
+    "Build prompt": {
+      "main": [[{ "node": "OpenAI: summarize", "type": "main", "index": 0 }]]
+    },
+    "OpenAI: summarize": {
+      "main": [[{ "node": "Reply: SUMMARY", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
